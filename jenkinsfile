@@ -1,0 +1,42 @@
+node('master') {
+    stage('checkout') {
+      checkout scm
+    }
+    stage('set terraform and kafka plugin') {
+      def tfHome = tool name: 'terraform13'
+      env.PATH = "${tfHome}:${env.PATH}"
+      sh 'terraform version'
+
+      def pluginFileExists = fileExists '~/.terraform.d/plugins/terraform-provider-kafka_v0.2.9'
+      if (pluginFileExists) {
+        echo 'kafka plugin files appear to be installed'
+      } else {
+        echo 'kafka plugin files are not in place, kafka plugin will be installed'
+        sh 'OS=$(uname -s | tr \'[:upper:]\' \'[:lower:]\'); wget -c "https://github.com/Mongey/terraform-provider-kafka/releases/download/v0.2.9/terraform-provider-kafka_0.2.9_${OS}_amd64.tar.gz" -O - | tar -xz -C  ~/.terraform.d/plugins'
+      }
+    }
+    stage('apply changes to kafka-topics') {
+      topicfiles = findChangedKafkaTopicsFiles()
+      echo "Kafka topic files that changed:"
+      echo topicfiles
+      if (size(topicfiles) == 0) {
+        return
+      }
+      for (topicfile in topicfiles) {
+        topicFilePath = topicfile.replaceAll("/kafka-topic.tf", "")
+        echo "about to apply contents of path ${topicFilePath}"
+        dir(topicFilePath) {
+          sh "terraform init"
+          sh "terraform apply -auto-approve"
+        }
+      }
+    }
+  }
+
+  def findChangedKafkaTopicsFiles() {
+  def changed_branch_commit = sh_out("bash -c 'git diff-tree --no-commit-id --name-only -r HEAD | grep -e kafka-topic.tf || true'").split('\n')
+  def changed_merged_commit = sh_out("bash -c 'git log -m -1 --name-only --pretty=format: HEAD | grep -e kafka-topic.tf || true'").split('\n')
+  def topicsFiles = changed_branch_commit + changed_merged_commit
+  topicsFiles = topicsFiles.toList().unique().findAll { it != "" }
+  return topicsFiles
+}
